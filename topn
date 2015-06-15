@@ -1,0 +1,226 @@
+%%%-------------------------------------------------------------------
+%%% @author liuqiang
+%%% @copyright (C) 2015, <COMPANY>
+%%% @doc
+%%%
+%%% @end
+%%% Created : 13. 五月 2015 17:02
+%%%-------------------------------------------------------------------
+-module(topn).
+-author("liuqiang").
+
+%%API
+-export([new/2,new/3,to_list/1,insert/2,print/1]).
+
+-export_type([topn/0]).
+
+-include_lib("eunit/include/eunit.hrl").
+
+-define(CAPACITY,50).
+
+-record(topn, {
+  capacity  :: non_neg_integer(),
+  index     :: index(),
+  type      :: type(),
+  data      :: ets:tab()
+}).
+
+-type topn()    :: #topn{}.
+-type type()    :: min | max.
+-type index()   :: key | value.
+
+%% @doc Returns a list of the terms in a topn.
+-spec to_list(topn()) -> [term()].
+
+to_list(H) ->
+  case {H#topn.index,H#topn.type} of
+    {key,min} ->
+      L=ets:tab2list(H#topn.data),
+      {KV,_}=lists:unzip(L),
+      KV;
+    {key,max} ->
+      L=ets:tab2list(H#topn.data),
+      {KV,_}=lists:unzip(L),
+      lists:reverse(KV);
+    {value,min} ->
+      L=ets:tab2list(H#topn.data),
+      {VK,_}=lists:unzip(L),
+      {Value,Key}=lists:unzip(VK),
+      lists:zip(Key,Value);
+    {value,max} ->
+      L=ets:tab2list(H#topn.data),
+      Reverse_L=lists:reverse(L),
+      {VK,_}=lists:unzip(Reverse_L),
+      {Value,Key}=lists:unzip(VK),
+      lists:zip(Key,Value)
+  end.
+
+%% @doc Creates an empty topn.
+%% <p>If <code>I</code> is <code>key</code> then it will index with the key,
+%% or index the value; If <code>T</code> is
+%% <code>min</code> it will key the mininum value, otherwise the maximum value.</p>
+-spec new(index(),type()) -> topn().
+
+new(I,T) when I =:= key;I=:= value , T=:=min;T=:=max ->
+  Tab = ets:new(?MODULE, [ordered_set, public, named_table]),
+  #topn{capacity=?CAPACITY, index=I, type=T, data=Tab};
+new(_I,_T)->
+  erlang:error(badarg).
+
+-spec new(non_neg_integer(),index(),type()) -> topn().
+
+new(C,I,T) when is_integer(C);C>0 , I =:= key;I=:= value , T=:=min;T=:=max ->
+  Tab = ets:new(?MODULE, [ordered_set, public, named_table]),
+  #topn{capacity=C, index=I, type=T, data=Tab};
+new(_S,_I,_O) ->
+  erlang:error(badarg).
+
+%% @doc Returns the number of elements contained in a top.
+-spec top_capacity(topn()) -> non_neg_integer().
+
+top_capacity(T) -> T#topn.capacity.
+
+%% @doc Returns currently the number of elements contained in a top.
+-spec top_current_size(topn()) -> non_neg_integer().
+
+top_current_size(T) -> length(ets:tab2list(T#topn.data)).
+%%   [[Size]]=ets:match(T#topn.size,{size,'$1'}),
+%%   Size.
+
+%% @doc Add a new element to a topn.
+%% <p> If top's size is smaller than capacity, insert into it, otherwise
+%% insert to topn and delete one according to type.
+%% According to tuple sort princple, if index=key,insert into topn
+%% {{Key,Value},Value}, otherwise insert into topn {{Value,Key},Key}</p>
+-spec insert(topn(), term()) -> ok.
+%in order to insert into ets tables with (k1,v),(k2,v) or (k,v1),(k,v2) style
+% Key Value pair, we use combined (key,value) or (value,key) as ets table's key
+insert(T, List) ->
+  case List of
+    [] -> ok;
+    [{Key,Value}|Tail] ->
+      C = top_capacity(T),
+      S = top_current_size(T),
+      case {S<C, T#topn.index, T#topn.type} of
+        {true,key,_} ->
+          ets:insert(T#topn.data,{{Key,Value},Value});
+        {true,value,_} ->
+          ets:insert(T#topn.data,{{Value,Key},Key});
+        {false,key,max} ->
+          case ets:match(T#topn.data, {{Key,Value},'$1'}) of
+               [] -> % the topn ets table don't have the Key
+                 ets:insert(T#topn.data,{{Key,Value},Value}),
+                 First_Key=ets:first(T#topn.data),
+                 ets:delete(T#topn.data,First_Key);
+               [[V]] ->
+                 if
+                   V =:= Value -> ok;%insert tuple is in the topn ets table
+                   V > Value -> ok;% insert Value is smaller than the according Value:V of the Key in the topn ets table
+                   true ->
+                     ets:insert(T#topn.data,{{Key,Value},Value}),
+                     First_Key=ets:first(T#topn.data),
+                     ets:delete(T#topn.data,First_Key)
+                 end
+          end;
+        {false,key,min} ->
+          case ets:match(T#topn.data, {{Key,Value},'$1'}) of
+            [] ->  % the topn ets table don't have the Key
+              ets:insert(T#topn.data,{{Key,Value},Value}),
+              Last_Key=ets:last(T#topn.data),
+              ets:delete(T#topn.data,Last_Key);
+            [[V]] ->
+                 if
+                   V =:= Value -> ok;%insert tuple is in the topn ets table
+                   V < Value -> ok;% insert Value is larger than the according Value:V of the Key in the topn ets table
+                   true ->
+                     ets:insert(T#topn.data,{{Key,Value},Value}),
+                     Last_Key=ets:last(T#topn.data),
+                     ets:delete(T#topn.data,Last_Key)
+                 end
+          end;
+        {false,value,max} ->
+          case ets:match(T#topn.data, {{Value,Key},'$1'}) of
+            [] ->  % the topn ets table don't have the Value
+              ets:insert(T#topn.data,{{Value,Key},Key}),
+              First_Value=ets:first(T#topn.data),
+              ets:delete(T#topn.data,First_Value);
+            [[K]] ->
+              if
+                K =:= Key -> ok;%insert tuple is in the topn ets table
+                K > Key -> ok;% insert Key is smaller than the according Key:K of the Value in the topn ets table
+                true ->
+                  ets:insert(T#topn.data,{{Value,Key},Key}),
+                  First_Value=ets:first(T#topn.data),
+                  ets:delete(T#topn.data,First_Value)
+              end
+          end;
+        {false,value,min} ->
+          case ets:match(T#topn.data, {{Value,Key},'$1'}) of
+            [] ->  % the topn ets table don't have the Value
+              ets:insert(T#topn.data,{{Value,Key},Key}),
+              Last_Value=ets:last(T#topn.data),
+              ets:delete(T#topn.data,Last_Value);
+            [[K]] ->
+              if
+                K =:= Key -> ok;%insert tuple is in the topn ets table
+                K < Key -> ok;% insert Key is bigger than the according Key:K of the Value in the topn ets table
+                true ->
+                  ets:insert(T#topn.data,{{Value,Key},Key}),
+                  Last_Value=ets:last(T#topn.data),
+                  ets:delete(T#topn.data,Last_Value)
+              end
+          end
+      end,
+      insert(T,Tail);
+    _->{error,badarg}
+  end.
+
+print(T)->
+  io:format("The capacity is ~w.~n",[T#topn.capacity]),
+  io:format("The index is ~w.~n",[T#topn.index]),
+  io:format("The type is ~w.~n",[T#topn.type]),
+  io:format("The tab data is ~w.~n",[to_list(T)]).
+
+
+start_test()->
+  L1=[{7,3.3},{1,4.5},{9,3.8},{4,4.2}],
+  L2=[{7,3.6},{6,4.5}],
+  L3=[{8,4.2},{2,3.1}],
+  L4=[{3,4.6},{5,3.1}],
+  L5=[{2,2.8},{5,5.1},{4,3.2}],
+  io:format("The list L1 is ~w.~n",[L1]),
+  io:format("The list L2 is ~w.~n",[L2]),
+  io:format("The list L3 is ~w.~n",[L3]),
+  io:format("The list L4 is ~w.~n",[L4]),
+  io:format("The list L5 is ~w.~n",[L5]),
+  {ok,Index}=io:read("index(key or value)->"),
+  {ok,Type}=io:read("type(min or max)->"),
+  case {Index,Type} of
+    {key,min} ->
+      io:format("Test index=key and type=min:~n");
+    {key,max} ->
+      io:format("Test index=key and type=max:~n");
+    {value,min} ->
+      io:format("Test index=value and type=min:~n");
+    {value,max} ->
+      io:format("Test index=value and type=max:~n");
+    _-> erlang:error(badinput)
+  end,
+  T=new(3,Index,Type),
+  io:format("Insert L1 to topn: ~n"),
+  insert(T,L1),
+  print(T),
+  io:format("Insert L2 to topn: ~n"),
+  insert(T,L2),
+  print(T),
+  io:format("Insert L3 to topn: ~n"),
+  insert(T,L3),
+  print(T),
+  io:format("Insert L4 to topn: ~n"),
+  insert(T,L4),
+  print(T),
+  io:format("Insert L5 to topn: ~n"),
+  insert(T,L5),
+  print(T),
+  ok.
+
